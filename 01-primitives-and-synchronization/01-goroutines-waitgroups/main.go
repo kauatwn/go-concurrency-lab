@@ -45,10 +45,8 @@ func main() {
 
 	fmt.Println("[MAIN] Waiting for workers to complete...")
 
-	// O Wait() bloqueia a execução do programa principal até que o contador do WaitGroup chegue a zero, ou seja, até que todas as goroutines tenham chamado Done().
-	// Isso garante que o programa principal não termine antes que todas as goroutines tenham concluído seu trabalho.
-
-	// Bloqueia a execução da thread main até que o contador do WaitGroup volte a 0
+	// Bloqueia a execução até que o contador do WaitGroup chegue a zero, aguardando que todas as goroutines concluam
+	// suas execuções e chamem Done().
 	wg.Wait()
 
 	fmt.Println("[MAIN] All workers finished. Exiting process safely.")
