@@ -16,25 +16,30 @@ type Result struct {
 	Err        error
 }
 
-// checkURL faz a requisição HTTP em segundo plano (Goroutine) e envia o resultado pelo canal.
-func checkURL(url string, wg *sync.WaitGroup, results chan<- Result) {
-	// Garante que o WaitGroup será decrementado ao final da execução desta função, mesmo que ocorra um erro.
-	defer wg.Done()
+// Checker encapsula a instância do cliente HTTP para ser reutilizada entre Goroutines.
+type Checker struct {
+	client *http.Client
+}
 
+// NewChecker cria um novo Checker com um cliente HTTP configurado com o timeout especificado.
+func NewChecker(timeout time.Duration) *Checker {
+	return &Checker{
+		client: &http.Client{
+			Timeout: timeout,
+		},
+	}
+}
+
+// Check faz a requisição HTTP GET para uma única URL e retorna o resultado da medição.
+func (c *Checker) Check(url string) Result {
 	start := time.Now()
 
-	// Configura um cliente com timeout curto de 3s para não travar indefinidamente.
-	client := http.Client{
-		Timeout: 3 * time.Second,
-	}
-
-	resp, err := client.Get(url)
+	resp, err := c.client.Get(url)
 	latency := time.Since(start)
 
 	if err != nil {
-		// Se der erro (ex: domínio não existe ou timeout), envia o erro pelo canal.
-		results <- Result{URL: url, Latency: latency, Err: err}
-		return
+		// Se ocorrer um erro (ex: falha de DNS ou timeout), retorna o erro capturado.
+		return Result{URL: url, Latency: latency, Err: err}
 	}
 
 	// Garante que o corpo da resposta será fechado ao final da função para evitar vazamentos de recursos.
@@ -45,12 +50,58 @@ func checkURL(url string, wg *sync.WaitGroup, results chan<- Result) {
 		}
 	}(resp.Body)
 
-	// Envia o resultado com sucesso pelo canal.
-	results <- Result{
-		URL:        url,
-		StatusCode: resp.StatusCode,
-		Latency:    latency,
+	// Consome e descarta o corpo da resposta HTTP para garantir a reutilização da conexão TCP (Keep-Alive).
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	return Result{URL: url, StatusCode: resp.StatusCode, Latency: latency}
+}
+
+// RunChecks orquestra a execução concorrente dos testes de URLs, retornando um canal somente leitura (<-chan Result).
+// Isso permite que o chamador consuma e exiba os resultados em tempo real (streaming) à medida que são concluídos.
+func RunChecks(checker *Checker, urls []string) <-chan Result {
+	// Canal com capacidade (buffer) dimensionada ao número de URLs
+	// para receber os resultados com segurança.
+	results := make(chan Result, len(urls))
+	var wg sync.WaitGroup
+
+	// Dispara uma Goroutine para cada URL na lista.
+	for _, url := range urls {
+		wg.Add(1) // Notifica o WaitGroup: +1 tarefa em andamento
+
+		go func(targetURL string) {
+			defer wg.Done() // Garante a baixa da tarefa ao finalizar a função
+			results <- checker.Check(targetURL)
+		}(url)
 	}
+
+	// Dispara uma Goroutine auxiliar APENAS para esperar os workers terminarem
+	// e fechar o canal de resultados. Se não fechar, o loop de leitura no main travará.
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	return results
+}
+
+// PrintResult exibe o log formatado no terminal para um resultado individual.
+func PrintResult(res Result) {
+	if res.Err != nil {
+		fmt.Printf("[FAIL] %-38s | Latency: %7v | Error: %v\n", res.URL, res.Latency.Round(time.Millisecond), res.Err)
+		return
+	}
+
+	fmt.Printf("[OK]   %-38s | Status: %d | Latency: %7v\n", res.URL, res.StatusCode, res.Latency.Round(time.Millisecond))
+}
+
+// PrintSummary exibe o relatório consolidado final com as estatísticas de execução.
+func PrintSummary(totalDuration time.Duration, totalTested, successCount, failureCount int) {
+	fmt.Println("\n================ SUMMARY ================")
+	fmt.Printf("Total Elapsed Time : %v\n", totalDuration.Round(time.Millisecond))
+	fmt.Printf("URLs Tested        : %d\n", totalTested)
+	fmt.Printf("Successful         : %d\n", successCount)
+	fmt.Printf("Failed / Errors    : %d\n", failureCount)
+	fmt.Println("=========================================")
 }
 
 func main() {
@@ -64,47 +115,27 @@ func main() {
 		"https://domain-does-not-exist-xyz.com",
 	}
 
-	var wg sync.WaitGroup
-
-	// Criamos um canal com capacidade (buffer) igual ao número de URLs
-	// para guardar os resultados de cada Goroutine de forma segura.
-	results := make(chan Result, len(urls))
+	// Configura um cliente com timeout curto de 3s para não travar indefinidamente.
+	checker := NewChecker(3 * time.Second)
 
 	fmt.Println("[SYSTEM] Checking URL health concurrently...")
 	startTime := time.Now()
 
-	// Dispara uma Goroutine para cada URL na lista.
-	for _, u := range urls {
-		wg.Add(1) // Notifica o WaitGroup: +1 tarefa em andamento
-		go checkURL(u, &wg, results)
-	}
+	// Dispara a checagem concorrente e obtém o canal de streaming
+	resultsChan := RunChecks(checker, urls)
 
-	// Dispara uma Goroutine auxiliar APENAS para esperar os workers terminarem
-	// e fechar o canal de resultados. Se não fechar, o loop de leitura no main travará.
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// O loop principal consome e exibe os resultados conforme eles vão chegando.
 	var successCount, failureCount int
 
-	for res := range results {
+	// O loop principal consome e exibe os resultados em tempo real conforme chegam no canal.
+	for res := range resultsChan {
 		if res.Err != nil {
 			failureCount++
-			fmt.Printf("[FAIL] %-38s | Latency: %7v | Error: %v\n", res.URL, res.Latency.Round(time.Millisecond), res.Err)
 		} else {
 			successCount++
-			fmt.Printf("[OK]   %-38s | Status: %d | Latency: %7v\n", res.URL, res.StatusCode, res.Latency.Round(time.Millisecond))
 		}
+		PrintResult(res)
 	}
 
 	totalDuration := time.Since(startTime)
-
-	fmt.Println("\n================ SUMMARY ================")
-	fmt.Printf("Total Elapsed Time : %v\n", totalDuration.Round(time.Millisecond))
-	fmt.Printf("URLs Tested        : %d\n", len(urls))
-	fmt.Printf("Successful         : %d\n", successCount)
-	fmt.Printf("Failed / Errors    : %d\n", failureCount)
-	fmt.Println("=========================================")
+	PrintSummary(totalDuration, len(urls), successCount, failureCount)
 }
