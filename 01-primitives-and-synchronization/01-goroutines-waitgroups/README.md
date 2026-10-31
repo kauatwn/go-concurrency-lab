@@ -1,6 +1,11 @@
-# 01 - Primitivas & Sincronização
+# Goroutines & sync.WaitGroup
 
-Este módulo cobre as primitivas fundamentais de concorrência em Go, a mecânica de execução do runtime e as técnicas de sincronização de memória.
+Este módulo apresenta os fundamentos da concorrência em Go, explorando a palavra-chave `go`, o **escalonador M:N** (_modelo G-M-P_) e a primitiva de sincronização `sync.WaitGroup`.
+
+O objetivo é compreender o ciclo de vida das goroutines e os mecanismos utilizados pelo _Go Runtime_ para gerenciar a execução concorrente, sem a interferência de regras de negócio ou bibliotecas externas.
+
+- **Propósito:** Demonstrar a mecânica de execução de goroutines e sincronização de tarefas utilizando recursos nativos da linguagem.
+- **Aplicação Prática:** Para ver essas primitivas resolvendo um problema real de I/O e latência de rede, consulte o [Lab 01 - Concurrent URL Health Checker](../../05-labs/01-url-health-checker/README.md).
 
 ## Concorrência vs. Paralelismo
 
@@ -26,4 +31,16 @@ O Go gerencia a concorrência por meio de um **Escalonador M:N** interno, mapean
 | **P**    | **Processor** | Contexto/recurso lógico de execução necessário para rodar código Go. Por padrão, equivale a `runtime.NumCPU()`. |
 
 > [!IMPORTANT]
-> **Ponto-chave:** A palavra-chave `go` garante **concorrência**. Se essas goroutines serão executadas em **paralelo**, isso depende da quantidade de núcleos de CPU físicos da máquina e da configuração de `GOMAXPROCS`.
+> **Ponto-chave (Concorrência vs. Paralelismo no Go):**
+>
+> A palavra-chave `go` garante apenas **concorrência**. Se essas goroutines serão executadas em **paralelo**, isso depende da quantidade de núcleos de CPU físicos da máquina e da configuração de `GOMAXPROCS`.
+
+## Sincronização de Estado (`sync.WaitGroup`)
+
+O `sync.WaitGroup` funciona como uma barreira de sincronização. Ele mantém um contador interno para evitar que a função `main` finalize o programa antes que todas as goroutines em segundo plano concluam suas tarefas.
+
+| Método      | Operação                     | Regra de Uso                                                                        |
+|:------------|:-----------------------------|:------------------------------------------------------------------------------------|
+| `wg.Add(n)` | Incrementa o contador        | Deve ser chamado na thread principal **antes** do disparo da goroutine (`go`).      |
+| `wg.Done()` | Decrementa o contador em `1` | Chamado dentro da goroutine ao encerrar a execução (recomenda-se o uso de `defer`). |
+| `wg.Wait()` | Bloqueia a execução          | Pausa a thread principal até que o contador zere.                                   |
