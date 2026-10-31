@@ -32,18 +32,19 @@ Ao aplicar **Goroutines** e **`sync.WaitGroup`**, as verificações ocorrem de f
                          (sync.WaitGroup)
 ```
 
-1. **Dispatcher (`main`)**: Itera sobre a lista de URLs, incrementa o contador com `wg.Add(1)` e dispara uma Goroutine dedicada por endpoint.
-2. **Workers (`checkURL`)**: Executam a requisição HTTP GET com timeout de 3 segundos, enviam a struct `Result` para o canal `results` e notificam a conclusão via `defer wg.Done()`.
-3. **Goroutine Monitora**: Executa `wg.Wait()` em segundo plano para aguardar a finalização de todas as tarefas e encerra com segurança o canal de resultados (`close(results)`).
-4. **Collector (`main`)**: Consome o canal via `range results`, exibindo o log individual de cada requisição e gerando o relatório consolidado ao final.
+1. **Dispatcher (`RunChecks`)**: Itera sobre a lista de URLs, incrementa o contador com `wg.Add(1)` e dispara uma Goroutine dedicada para cada endpoint.
+2. **Workers (`checker.Check`)**: Executam a requisição HTTP GET com timeout de 3 segundos, consomem o corpo da resposta para reutilização da conexão TCP (*Keep-Alive*) e retornam a struct `Result`.
+3. **Goroutine de Monitoramento**: Executa `wg.Wait()` em segundo plano dentro de `RunChecks` para aguardar a finalização de todas as tarefas e encerra o canal de resultados com `close(results)`.
+4. **Collector (`main`)**: Consome o canal `resultsChan` em tempo real (*streaming*), enviando cada resultado para `PrintResult` e gerando o relatório final via `PrintSummary`.
 
 > [!IMPORTANT]
-> **Ponto-chave (Fechamento do Canal com Routine Monitora):**
+> **Ponto-chave (Fechamento do Canal com Goroutine de Monitoramento):**
 >
-> O loop de leitura `for res := range results` na função `main` continuará bloqueado esperando por novos dados até que o canal seja formalmente fechado com `close(results)`. Por isso, utilizamos uma goroutine de monitoramento em segundo plano com `wg.Wait()`. Se executássemos o `wg.Wait()` na própria `main` antes do loop, o canal encheria e causaria um *deadlock*.
+> O loop de leitura `for res := range resultsChan` na função `main` continuará bloqueado esperando por novos dados até que o canal seja formalmente fechado com `close(results)`. Por isso, utilizamos a goroutine de monitoramento em segundo plano com `wg.Wait()`. Se executássemos o `wg.Wait()` na própria thread principal antes do loop, o canal encheria e causaria um *deadlock*.
 
 ## Conceitos Aplicados
 
-- **Goroutines (`go checkURL`)**: Disparo de tarefas I/O leves executadas em segundo plano pelo Go Scheduler.
+- **Goroutines (`go checker.Check`)**: Disparo de tarefas I/O leves executadas em segundo plano pelo Go Scheduler.
 - **Barreira de Sincronização (`sync.WaitGroup`)**: Coordenação de estado para impedir que o programa principal encerre antes que todos os trabalhadores finalizem suas requisições.
-- **Comunicação por Canais com Buffer (`chan Result`)**: Transferência thread-safe de dados entre goroutines sem acoplamento direto ou condições de corrida em variáveis compartilhadas.
+- **Comunicação por Canais com Buffer (`chan Result`)**: Transferência *thread-safe* de dados entre goroutines sem acoplamento direto ou condições de corrida em variáveis compartilhadas.
+- **Reutilização de Conexões (`http.Client` & `io.Copy`)**: Reuso eficiente de *sockets* TCP (*Keep-Alive*) compartilhando um único cliente HTTP entre goroutines.
